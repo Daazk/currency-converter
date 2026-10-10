@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Виртуальное окружение
+venv/
+.venv/
+
+# Переменные окружения (пароли) — в репозитории только .env.example
+.env
+
+# IDE
+.vscode/
+.idea/
+
+# Кэши инструментов
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
