@@ -3,10 +3,10 @@ from typing import Annotated
 from fastapi import Depends
 from sqlalchemy.orm import Session
 
-from app.dependencies.container import build_currency_service
+from app.dependencies.container import build_converter_service
 from app.db.session import get_db
-from app.services.currency import CurrencyService
+from app.services.currency_converter import CurrencyConverterService
 
 
-def get_currency_service(db: Annotated[Session, Depends(get_db)]) -> CurrencyService:
-    return build_currency_service(db)
+def get_converter_service(db: Annotated[Session, Depends(get_db)]) -> CurrencyConverterService:
+    return build_converter_service(db)

@@ -2,21 +2,10 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 
-from app.clients.nbu import NBUClient
 from app.repositories.currency import CurrencyRepository
 from app.services.exceptions import CurrencyNotFoundError
 
 BASE_CURRENCY = "UAH"
-
-
-@dataclass(frozen=True)
-class ConvertResult:
-    from_currency: str
-    to_currency: str
-    amount: Decimal
-    result: Decimal
-    rate: Decimal
-    rate_date: date | None
 
 
 def round_significant(value: Decimal, digits: int = 6) -> Decimal:
@@ -38,24 +27,19 @@ def round_amount(value: Decimal) -> Decimal:
     return round_significant(value)
 
 
-class CurrencyService:
-    def __init__(
-        self,
-        nbu_client: NBUClient,
-        repository: CurrencyRepository,
-        excluded_codes: list[str],
-    ) -> None:
+@dataclass(frozen=True)
+class ConvertResult:
+    from_currency: str
+    to_currency: str
+    amount: Decimal
+    result: Decimal
+    rate: Decimal
+    rate_date: date | None
 
-        self._nbu_client = nbu_client
+
+class CurrencyConverterService:
+    def __init__(self, repository: CurrencyRepository) -> None:
         self._repository = repository
-        self._excluded = set(excluded_codes)
-
-    def update_rates(self) -> int:
-        rates = self._nbu_client.fetch_rates()
-        currencies = [r for r in rates if r.code not in self._excluded]
-
-        self._repository.upsert_many(currencies)
-        return len(currencies)
 
     def convert(
         self, from_currency: str, to_currency: str, amount: Decimal

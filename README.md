@@ -14,6 +14,7 @@
   - [Обновление курсов вручную](#обновление-курсов-вручную)
   - [Остановка](#остановка)
   - [Локальный запуск без Docker](#локальный-запуск-без-docker)
+  - [Тесты](#тесты)
 - [Задание](#-задание)
   - [Стек](#стек)
   - [1. Бизнес-требования](#1-бизнес-требования-что-сделать)
@@ -225,6 +226,30 @@ python -m app.cli update-rates       # загрузить курсы → "Обн
 uvicorn app.main:app --reload        # API на http://127.0.0.1:8000
 ```
 
+### Тесты
+
+Тесты не ходят ни в PostgreSQL, ни в API НБУ: репозиторий и `NBUClient` подменяются фейками в памяти, поэтому `.env` и запущенная БД не нужны.
+
+Локально (в активированном `venv`, `pytest` ставится из `requirements.txt`):
+
+```bash
+pip install -r requirements.txt
+pytest
+```
+
+В Docker (контейнер `api` должен быть запущен):
+
+```bash
+docker-compose exec api pytest
+```
+
+| Файл | Что проверяет |
+|------|---------------|
+| `tests/test_currency_converter.py` | кросс-курс, округление, UAH, дата курса, `CurrencyNotFoundError` |
+| `tests/test_currency_updater.py` | фильтр `EXCLUDED_CODES`, при ошибке НБУ в БД ничего не пишется |
+| `tests/test_api.py` | `/api/convert`: `200`, `404`, `422` |
+| `tests/test_container.py` | конвертеру не создаётся `NBUClient`, апдейтеру — создаётся |
+
 ---
 
 ## 📋 Задание
@@ -332,9 +357,9 @@ docker-compose up -d
 
    Это **чёрный** список, а не белый: новая валюта у НБУ сама попадёт в БД без правки конфига. Фильтровать по префиксу `X` нельзя — по ISO 4217 на `X` есть и настоящие валюты (`XOF`, `XAF`, `XCD`).
 
-   Фильтрует `CurrencyService.update_rates()` (это бизнес-правило), а не `NBUClient` и не `CurrencyRepository`. Отдельного списка «поддерживаемых» валют нет — поддерживается всё, что есть в БД.
+   Фильтрует `CurrencyUpdaterService.update_rates()` (это бизнес-правило), а не `NBUClient` и не `CurrencyRepository`. Отдельного списка «поддерживаемых» валют нет — поддерживается всё, что есть в БД.
 
-   **UAH** в ответе НБУ нет (это базовая валюта), но конвертация `UAH ↔ X` обязана работать. Поэтому `CurrencyService` считает курс UAH равным `1` и не ищет его в БД (в таблицу UAH не пишем).
+   **UAH** в ответе НБУ нет (это базовая валюта), но конвертация `UAH ↔ X` обязана работать. Поэтому `CurrencyConverterService` считает курс UAH равным `1` и не ищет его в БД (в таблицу UAH не пишем).
 4. Получаем данные от НБУ по адресу:
 
    ```
@@ -465,16 +490,18 @@ Repository должен уметь делать upsert:
 - если `USD` существует → `UPDATE`;
 - если `USD` нет → `INSERT`.
 
-#### 4️⃣ `CurrencyService`
+#### 4️⃣ Сервисы: `CurrencyUpdaterService` и `CurrencyConverterService`
 
-Здесь находится **бизнес-логика**. У него две основные задачи:
+Здесь находится **бизнес-логика**. В ней две задачи, и у каждой свой сервис (SRP):
 
-| № | Задача               |
-|---|----------------------|
-| 1 | Обновление курсов    |
-| 2 | Конвертация          |
+| Сервис | Задача | Зависимости | Кто вызывает |
+|--------|--------|-------------|--------------|
+| `CurrencyUpdaterService` | обновление курсов: НБУ → фильтр `EXCLUDED_CODES` → БД | `NBUClient`, `CurrencyRepository`, `excluded_codes` | CLI (cron) |
+| `CurrencyConverterService` | конвертация по кросс-курсу | только `CurrencyRepository` | Router |
 
-Сценарий конвертации — Service:
+У задач разные причины для изменения (сменился источник курсов ↔ поменялись правила расчёта) и разные потребители. Если держать их в одном классе, то для каждого запроса `/api/convert` создавался бы `NBUClient`, который конвертации не нужен.
+
+Сценарий конвертации — `CurrencyConverterService`:
 
 1. получает `USD` из Repository;
 2. получает `EUR` из Repository;
@@ -487,7 +514,7 @@ Repository должен уметь делать upsert:
 
 #### 5️⃣ FastAPI Router
 
-Router получает `from_currency`, `to_currency`, `amount`, но **сам ничего не рассчитывает** — только передаёт данные в `CurrencyService`.
+Router получает `from_currency`, `to_currency`, `amount`, но **сам ничего не рассчитывает** — только передаёт данные в `CurrencyConverterService`.
 
 #### 6️⃣ Схемы API (Pydantic)
 
@@ -500,10 +527,10 @@ Router получает `from_currency`, `to_currency`, `amount`, но **сам 
 ```
 CLI
  ↓
-CurrencyService.update_rates()
+CurrencyUpdaterService.update_rates()
 ```
 
-А дальше Service сам:
+А дальше сервис сам:
 
 ```
 NBUClient
@@ -522,7 +549,7 @@ cron
  ↓
 CLI
  ↓
-CurrencyService
+CurrencyUpdaterService
  ↓
 NBUClient + Repository
 ```
@@ -530,9 +557,11 @@ NBUClient + Repository
 ### 10. Запрет обратных зависимостей
 
 ```
-Router ──► Service ──► Repository ──► PostgreSQL
-  CLI ──►    │
-             └──────► NBUClient ──► API НБУ
+Router ──► CurrencyConverterService ──► Repository ──► PostgreSQL
+                                            ▲
+   CLI ──► CurrencyUpdaterService ──────────┤
+                    │
+                    └──► NBUClient ──► API НБУ
 ```
 
 Запрещённые направления:
@@ -548,8 +577,9 @@ Router ──► Service ──► Repository ──► PostgreSQL
 | Router → NBUClient         |   ❌   |
 | CLI → Repository           |   ❌   |
 | CLI → NBUClient            |   ❌   |
+| CurrencyConverterService → NBUClient |   ❌   |
 
-Router и CLI — только «входы» в приложение, они ходят **исключительно через Service**. Конкретные `NBUClient` и `CurrencyRepository` передаются в Service через конструктор (DI), сам Service их не создаёт.
+Router и CLI — только «входы» в приложение, они ходят **исключительно через Service**. Конкретные `NBUClient` и `CurrencyRepository` передаются в сервисы через конструктор (DI), сами сервисы их не создают — этим занимаются фабрики `build_converter_service` / `build_updater_service` в `app/dependencies/container.py`.
 
 ### 11. Зависимости (pip freeze)
 
